@@ -76,3 +76,110 @@
             (if (is-eq user-tier "basic")
                 (is-eq content-tier "basic")
                 false))))
+
+
+(define-public (renew-subscription)
+    (let ((caller tx-sender)
+          (current-sub (unwrap! (get-subscription-details caller) ERR-NO-SUBSCRIPTION))
+          (tier-price (get-tier-price (get tier current-sub))))
+        (try! (stx-transfer? tier-price caller (as-contract tx-sender)))
+        (ok (map-set subscriptions 
+            caller 
+            {tier: (get tier current-sub), 
+             expiration: (+ stacks-block-height u8640)}))))
+
+
+(define-public (upgrade-subscription (new-tier (string-ascii 20)))
+    (let ((caller tx-sender)
+          (current-sub (unwrap! (get-subscription-details caller) ERR-NO-SUBSCRIPTION))
+          (price-difference (- (get-tier-price new-tier) (get-tier-price (get tier current-sub)))))
+        (asserts! (> price-difference u0) ERR-NOT-AUTHORIZED)
+        (try! (stx-transfer? price-difference caller (as-contract tx-sender)))
+        (ok (map-set subscriptions 
+            caller 
+            {tier: new-tier, 
+             expiration: (get expiration current-sub)}))))
+
+
+(define-map news-comments 
+    {news-id: uint, comment-id: uint}
+    {author: principal, content: (string-ascii 280), timestamp: uint})
+
+(define-data-var comment-counter uint u0)
+
+(define-public (add-comment (news-id uint) (content (string-ascii 280)))
+    (let ((comment-id (+ (var-get comment-counter) u1))
+          (caller tx-sender))
+        (asserts! (is-some (get-subscription-details caller)) ERR-NOT-AUTHORIZED)
+        (var-set comment-counter comment-id)
+        (ok (map-set news-comments
+            {news-id: news-id, comment-id: comment-id}
+            {author: caller, content: content, timestamp: stacks-block-height}))))
+
+
+(define-map bookmarks
+    {user: principal, news-id: uint}
+    {timestamp: uint})
+
+(define-public (toggle-bookmark (news-id uint))
+    (let ((caller tx-sender))
+        (asserts! (is-some (get-subscription-details caller)) ERR-NOT-AUTHORIZED)
+        (if (is-some (map-get? bookmarks {user: caller, news-id: news-id}))
+            (ok (map-delete bookmarks {user: caller, news-id: news-id}))
+            (ok (map-set bookmarks 
+                {user: caller, news-id: news-id}
+                {timestamp: stacks-block-height})))))
+
+
+(define-map news-ratings
+    {news-id: uint, user: principal}
+    {rating: uint})
+
+(define-public (rate-news (news-id uint) (rating uint))
+    (let ((caller tx-sender))
+        (asserts! (and (>= rating u1) (<= rating u5)) (err u103))
+        (asserts! (is-some (get-subscription-details caller)) ERR-NOT-AUTHORIZED)
+        (ok (map-set news-ratings
+            {news-id: news-id, user: caller}
+            {rating: rating}))))
+
+
+
+(define-constant VALID-CATEGORIES (list "defi" "nft" "trading" "regulation" "technology"))
+
+(define-map news-categories
+    uint
+    (list 10 (string-ascii 20)))
+
+(define-public (set-news-categories (news-id uint) (categories (list 10 (string-ascii 20))))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-NOT-AUTHORIZED)
+        (ok (map-set news-categories news-id categories))))
+
+
+
+(define-map authors
+    principal
+    {name: (string-ascii 50), bio: (string-ascii 200)})
+
+(define-public (register-author (name (string-ascii 50)) (bio (string-ascii 200)))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-NOT-AUTHORIZED)
+        (ok (map-set authors
+            tx-sender
+            {name: name, bio: bio}))))
+
+
+
+
+(define-map news-tags
+    uint
+    (list 10 (string-ascii 20)))
+
+(define-public (add-news-tags (news-id uint) (tags (list 10 (string-ascii 20))))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-NOT-AUTHORIZED)
+        (ok (map-set news-tags news-id tags))))
+
+(define-private (check-news-tag (news-tag {id: uint, value: (list 10 (string-ascii 20))}) (search-tag (string-ascii 20)))
+    (is-some (index-of? (get value news-tag) search-tag)))
