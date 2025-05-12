@@ -336,3 +336,78 @@
              reward-claimed: true}))))
 
 
+(define-constant SHARE-REWARD u10)
+(define-constant MAX-SHARES-PER-DAY u5)
+
+(define-map content-shares 
+    {user: principal, news-id: uint}
+    {share-count: uint, last-shared: uint})
+
+(define-map daily-share-counts
+    {user: principal, day: uint}
+    uint)
+
+(define-private (get-current-day)
+    (/ stacks-block-height u144))
+
+(define-public (share-content (news-id uint) (recipient principal))
+    (let (
+        (caller tx-sender)
+        (current-day (get-current-day))
+        (daily-shares (get-daily-shares caller current-day))
+    )
+        (asserts! (is-some (get-subscription-details caller)) ERR-NOT-AUTHORIZED)
+        (asserts! (< daily-shares MAX-SHARES-PER-DAY) ERR-NOT-AUTHORIZED)
+        (try! (stx-transfer? SHARE-REWARD (as-contract tx-sender) caller))
+        (map-set daily-share-counts 
+            {user: caller, day: current-day}
+            (+ daily-shares u1))
+        (ok true)))
+(define-read-only (get-daily-shares (user principal) (day uint))
+    (get-shares-count (map-get? daily-share-counts {user: user, day: day})))
+
+(define-private (get-shares-count (shares (optional uint)))
+    (default-to u0 shares))
+
+
+
+(define-constant MARKETPLACE-FEE u50)
+
+(define-map premium-content
+    uint 
+    {creator: principal,
+     price: uint,
+     access-count: uint,
+     max-access: uint})
+
+(define-map content-access
+    {user: principal, content-id: uint}
+    bool)
+
+(define-public (list-premium-content (content-id uint) (price uint) (max-access uint))
+    (let ((caller tx-sender))
+        (asserts! (is-eq caller contract-owner) ERR-NOT-AUTHORIZED)
+        (ok (map-set premium-content
+            content-id
+            {creator: caller,
+             price: price,
+             access-count: u0,
+             max-access: max-access}))))
+
+(define-public (purchase-content-access (content-id uint))
+    (let (
+        (caller tx-sender)
+        (content (unwrap! (map-get? premium-content content-id) ERR-NO-SUBSCRIPTION))
+    )
+        (asserts! (< (get access-count content) (get max-access content)) ERR-NOT-AUTHORIZED)
+        (try! (stx-transfer? (get price content) caller (get creator content)))
+        (map-set premium-content
+            content-id
+            (merge content {access-count: (+ (get access-count content) u1)}))
+        (map-set content-access
+            {user: caller, content-id: content-id}
+            true)
+        (ok true)))
+
+
+
