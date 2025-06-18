@@ -12,6 +12,37 @@
 (define-constant PRO-TIER-PRICE u500)
 (define-constant ELITE-TIER-PRICE u1000)
 
+(define-constant ERR-NOT-MODERATOR (err u105))
+(define-constant ERR-ALREADY-FLAGGED (err u106))
+(define-constant ERR-VOTING-ENDED (err u107))
+(define-constant ERR-ALREADY-VOTED (err u108))
+
+(define-constant MODERATOR-STAKE u1000)
+(define-constant VOTING-PERIOD u1440)
+(define-constant MIN-VOTES-REQUIRED u3)
+
+(define-map moderators
+    principal
+    {stake: uint, reputation: uint, active: bool})
+
+(define-map content-flags
+    uint
+    {reporter: principal,
+     reason: (string-ascii 100),
+     flagged-at: uint,
+     votes-for: uint,
+     votes-against: uint,
+     resolved: bool,
+     voting-ends: uint})
+
+(define-map moderation-votes
+    {content-id: uint, voter: principal}
+    {vote: bool, voted-at: uint})
+
+(define-map content-status
+    uint
+    {hidden: bool, strike-count: uint})
+
 ;; Data maps
 (define-map subscriptions
     principal
@@ -409,5 +440,98 @@
             true)
         (ok true)))
 
+
+
+(define-public (register-as-moderator)
+    (let ((caller tx-sender))
+        (asserts! (is-none (map-get? moderators caller)) ERR-ALREADY-SUBSCRIBED)
+        (try! (stx-transfer? MODERATOR-STAKE caller (as-contract tx-sender)))
+        (ok (map-set moderators
+            caller
+            {stake: MODERATOR-STAKE,
+             reputation: u100,
+             active: true}))))
+
+(define-public (flag-content (content-id uint) (reason (string-ascii 100)))
+    (let ((caller tx-sender))
+        (asserts! (is-some (get-moderator-info caller)) ERR-NOT-MODERATOR)
+        (asserts! (is-none (map-get? content-flags content-id)) ERR-ALREADY-FLAGGED)
+        (ok (map-set content-flags
+            content-id
+            {reporter: caller,
+             reason: reason,
+             flagged-at: stacks-block-height,
+             votes-for: u0,
+             votes-against: u0,
+             resolved: false,
+             voting-ends: (+ stacks-block-height VOTING-PERIOD)}))))
+
+(define-public (vote-on-flag (content-id uint) (support-flag bool))
+    (let (
+        (caller tx-sender)
+        (flag-info (unwrap! (map-get? content-flags content-id) ERR-NO-SUBSCRIPTION))
+        (vote-key {content-id: content-id, voter: caller})
+    )
+        (asserts! (is-some (get-moderator-info caller)) ERR-NOT-MODERATOR)
+        (asserts! (not (get resolved flag-info)) ERR-VOTING-ENDED)
+        (asserts! (< stacks-block-height (get voting-ends flag-info)) ERR-VOTING-ENDED)
+        (asserts! (is-none (map-get? moderation-votes vote-key)) ERR-ALREADY-VOTED)
+        
+        (map-set moderation-votes vote-key {vote: support-flag, voted-at: stacks-block-height})
+        
+        (if support-flag
+            (map-set content-flags content-id
+                (merge flag-info {votes-for: (+ (get votes-for flag-info) u1)}))
+            (map-set content-flags content-id
+                (merge flag-info {votes-against: (+ (get votes-against flag-info) u1)})))
+        (ok true)))
+
+(define-public (resolve-flag (content-id uint))
+    (let (
+        (flag-info (unwrap! (map-get? content-flags content-id) ERR-NO-SUBSCRIPTION))
+        (total-votes (+ (get votes-for flag-info) (get votes-against flag-info)))
+        (current-status (default-to {hidden: false, strike-count: u0} (map-get? content-status content-id)))
+    )
+        (asserts! (not (get resolved flag-info)) ERR-VOTING-ENDED)
+        (asserts! (>= stacks-block-height (get voting-ends flag-info)) ERR-VOTING-ENDED)
+        (asserts! (>= total-votes MIN-VOTES-REQUIRED) ERR-NOT-AUTHORIZED)
+        
+        (map-set content-flags content-id
+            (merge flag-info {resolved: true}))
+        
+        (if (> (get votes-for flag-info) (get votes-against flag-info))
+            (map-set content-status content-id
+                {hidden: true, strike-count: (+ (get strike-count current-status) u1)})
+            (map-set content-status content-id current-status))
+        (ok true)))
+
+(define-read-only (get-moderator-info (moderator principal))
+    (map-get? moderators moderator))
+
+(define-read-only (get-flag-info (content-id uint))
+    (map-get? content-flags content-id))
+
+(define-read-only (get-content-status (content-id uint))
+    (map-get? content-status content-id))
+
+(define-read-only (is-content-hidden (content-id uint))
+    (match (map-get? content-status content-id)
+        status (get hidden status)
+        false))
+
+(define-public (update-moderator-reputation (moderator principal) (new-reputation uint))
+    (let ((mod-info (unwrap! (map-get? moderators moderator) ERR-NOT-MODERATOR)))
+        (asserts! (is-eq tx-sender contract-owner) ERR-NOT-AUTHORIZED)
+        (ok (map-set moderators
+            moderator
+            (merge mod-info {reputation: new-reputation})))))
+
+
+(define-read-only (get-news-safe (id uint))
+    (let ((news (unwrap! (map-get? news-content id) ERR-NO-SUBSCRIPTION))
+          (user-sub (unwrap! (get-subscription-details tx-sender) ERR-NO-SUBSCRIPTION)))
+        (asserts! (not (is-content-hidden id)) ERR-NOT-AUTHORIZED)
+        (asserts! (can-access-tier (get tier news) (get tier user-sub)) ERR-NOT-AUTHORIZED)
+        (ok news)))
 
 
