@@ -535,3 +535,114 @@
         (ok news)))
 
 
+(define-constant ERR-TIP-TOO-LOW (err u109))
+(define-constant ERR-INVALID-PERCENTAGE (err u110))
+(define-constant ERR-INSUFFICIENT-BALANCE (err u111))
+
+(define-constant MIN-TIP-AMOUNT u10)
+(define-constant DEFAULT-PLATFORM-FEE u10)
+
+(define-data-var platform-tip-fee uint DEFAULT-PLATFORM-FEE)
+
+(define-map content-tips
+    uint
+    {total-tips: uint,
+     tip-count: uint,
+     last-tip-at: uint})
+
+(define-map user-tips-sent
+    principal
+    {total-sent: uint,
+     tip-count: uint})
+
+(define-map user-tips-received
+    principal
+    {total-received: uint,
+     withdrawable: uint})
+
+(define-map tip-history
+    {content-id: uint, tip-id: uint}
+    {tipper: principal,
+     amount: uint,
+     timestamp: uint})
+
+(define-data-var tip-counter uint u0)
+
+(define-public (tip-content (content-id uint) (tip-amount uint))
+    (let (
+        (caller tx-sender)
+        (news (unwrap! (map-get? news-content content-id) ERR-NO-SUBSCRIPTION))
+        (platform-fee (/ (* tip-amount (var-get platform-tip-fee)) u100))
+        (creator-amount (- tip-amount platform-fee))
+        (tip-id (+ (var-get tip-counter) u1))
+        (current-tips (default-to {total-tips: u0, tip-count: u0, last-tip-at: u0} (map-get? content-tips content-id)))
+        (sender-stats (default-to {total-sent: u0, tip-count: u0} (map-get? user-tips-sent caller)))
+        (receiver-stats (default-to {total-received: u0, withdrawable: u0} (map-get? user-tips-received contract-owner)))
+    )
+        (asserts! (is-some (get-subscription-details caller)) ERR-NOT-AUTHORIZED)
+        (asserts! (>= tip-amount MIN-TIP-AMOUNT) ERR-TIP-TOO-LOW)
+        (asserts! (not (is-content-hidden content-id)) ERR-NOT-AUTHORIZED)
+        
+        (try! (stx-transfer? tip-amount caller (as-contract tx-sender)))
+        (try! (as-contract (stx-transfer? creator-amount tx-sender contract-owner)))
+        
+        (var-set tip-counter tip-id)
+        
+        (map-set content-tips content-id
+            {total-tips: (+ (get total-tips current-tips) tip-amount),
+             tip-count: (+ (get tip-count current-tips) u1),
+             last-tip-at: stacks-block-height})
+        
+        (map-set user-tips-sent caller
+            {total-sent: (+ (get total-sent sender-stats) tip-amount),
+             tip-count: (+ (get tip-count sender-stats) u1)})
+        
+        (map-set user-tips-received contract-owner
+            {total-received: (+ (get total-received receiver-stats) creator-amount),
+             withdrawable: (+ (get withdrawable receiver-stats) creator-amount)})
+        
+        (map-set tip-history {content-id: content-id, tip-id: tip-id}
+            {tipper: caller,
+             amount: tip-amount,
+             timestamp: stacks-block-height})
+        
+        (ok tip-id)))
+
+(define-public (withdraw-tips (amount uint))
+    (let (
+        (caller tx-sender)
+        (receiver-stats (unwrap! (map-get? user-tips-received caller) ERR-INSUFFICIENT-BALANCE))
+    )
+        (asserts! (<= amount (get withdrawable receiver-stats)) ERR-INSUFFICIENT-BALANCE)
+        (try! (as-contract (stx-transfer? amount tx-sender caller)))
+        
+        (map-set user-tips-received caller
+            {total-received: (get total-received receiver-stats),
+             withdrawable: (- (get withdrawable receiver-stats) amount)})
+        
+        (ok amount)))
+
+(define-public (set-platform-tip-fee (new-fee uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) ERR-NOT-AUTHORIZED)
+        (asserts! (<= new-fee u25) ERR-INVALID-PERCENTAGE)
+        (var-set platform-tip-fee new-fee)
+        (ok new-fee)))
+
+(define-read-only (get-content-tips (content-id uint))
+    (map-get? content-tips content-id))
+
+(define-read-only (get-user-tip-stats (user principal))
+    {sent: (map-get? user-tips-sent user),
+     received: (map-get? user-tips-received user)})
+
+(define-read-only (get-tip-history (content-id uint) (tip-id uint))
+    (map-get? tip-history {content-id: content-id, tip-id: tip-id}))
+
+(define-read-only (get-platform-tip-fee)
+    (var-get platform-tip-fee))
+
+(define-read-only (get-withdrawable-tips (user principal))
+    (match (map-get? user-tips-received user)
+        stats (get withdrawable stats)
+        u0))
