@@ -9,6 +9,16 @@ requirements = []
 path = 'contracts/CryptoNews.clar'
 clarity_version = 3
 epoch = 3.1
+
+[contracts.ContentVerification]
+path = 'contracts/ContentVerification.clar'
+clarity_version = 3
+epoch = 3.1
+
+[contracts.EmergencyAlerts]
+path = 'contracts/EmergencyAlerts.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
